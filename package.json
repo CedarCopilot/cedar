@@ -50,7 +50,12 @@
 		"reactflow": "^11.11.0",
 		"remark-gfm": "^4.0.1",
 		"tailwind-merge": "^3.3.1",
-		"zod": "^3.25.76"
+		"zod": "^3.25.76",
+		"zustand": "^4.4.1",
+		"date-fns": "^2.30.0",
+		"googleapis": "^128.0.0",
+		"google-auth-library": "^9.4.1",
+		"nodemailer": "^6.9.7"
 	},
 	"devDependencies": {
 		"@babel/preset-env": "^7.28.0",
