@@ -11,10 +11,9 @@ Open your Cursor settings file (`~/.cursor/settings.json`) and add:
 ```json
 {
   "mcpServers": {
-    "cedar": {
-      "command": "npx",
-      "args": ["@cedar/mcp-server"],
-      "env": {}
+    "cedar-mcp": {
+      "url": "https://mcpwithcedar-production.up.railway.app/jsonrpc",
+      "description": "Cedar-OS Expert MCP Server"
     }
   }
 }
@@ -158,4 +157,4 @@ The MCP server understands:
 
 - [Cedar Discord Community](https://discord.gg/4AWawRjNdZ)
 - [GitHub Issues](https://github.com/CedarCopilot/cedar-OS/issues)
-- [Cedar Documentation](https://docs.cedar.ai)
+- [Cedar Documentation](https://docs.cedarcopilot.com)
