@@ -3,10 +3,57 @@ import type {
 	MastraParams,
 	ProviderImplementation,
 	StructuredParams,
+	VoiceParams,
 } from '@/store/agentConnection/AgentConnectionTypes';
 import { handleEventStream } from '@/store/agentConnection/agentUtils';
 
 type MastraConfig = InferProviderConfig<'mastra'>;
+
+// Helper functions for voice methods
+const createVoiceHeaders = (config: MastraConfig): Record<string, string> => {
+	const headers: Record<string, string> = {};
+
+	// Only add Authorization header if apiKey is provided
+	if (config.apiKey) {
+		headers.Authorization = `Bearer ${config.apiKey}`;
+	}
+
+	return headers;
+};
+
+const resolveVoiceEndpoint = (
+	voiceSettings: VoiceParams['voiceSettings'],
+	config: MastraConfig
+): string => {
+	// Use the endpoint from voiceSettings if provided, otherwise use voiceRoute from config
+	const voiceEndpoint = voiceSettings.endpoint || config.voiceRoute || '/voice';
+	return voiceEndpoint.startsWith('http')
+		? voiceEndpoint
+		: `${config.baseURL}${voiceEndpoint}`;
+};
+
+const createVoiceFormData = (params: VoiceParams): FormData => {
+	const { audioData, voiceSettings, context, ...rest } = params;
+
+	const formData = new FormData();
+	formData.append('audio', audioData, 'recording.webm');
+	formData.append('settings', JSON.stringify(voiceSettings));
+
+	if (context) {
+		formData.append('context', context);
+	}
+
+	for (const [key, value] of Object.entries(rest)) {
+		if (value === undefined || value === null) continue;
+		if (typeof value === 'object') {
+			formData.append(key, JSON.stringify(value));
+		} else {
+			formData.append(key, String(value));
+		}
+	}
+
+	return formData;
+};
 
 export const mastraProvider: ProviderImplementation<
 	MastraParams,
@@ -135,37 +182,9 @@ export const mastraProvider: ProviderImplementation<
 	},
 
 	voiceLLM: async (params, config) => {
-		const { audioData, voiceSettings, context, ...rest } = params;
-
-		const headers: Record<string, string> = {};
-
-		// Only add Authorization header if apiKey is provided
-		if (config.apiKey) {
-			headers.Authorization = `Bearer ${config.apiKey}`;
-		}
-
-		// Use the endpoint from voiceSettings if provided, otherwise use voiceRoute from config
-		const voiceEndpoint =
-			voiceSettings.endpoint || config.voiceRoute || '/voice';
-		const fullUrl = voiceEndpoint.startsWith('http')
-			? voiceEndpoint
-			: `${config.baseURL}${voiceEndpoint}`;
-
-		const formData = new FormData();
-		formData.append('audio', audioData, 'recording.webm');
-		formData.append('settings', JSON.stringify(voiceSettings));
-		if (context) {
-			formData.append('context', context);
-		}
-
-		for (const [key, value] of Object.entries(rest)) {
-			if (value === undefined || value === null) continue;
-			if (typeof value === 'object') {
-				formData.append(key, JSON.stringify(value));
-			} else {
-				formData.append(key, String(value));
-			}
-		}
+		const headers = createVoiceHeaders(config);
+		const fullUrl = resolveVoiceEndpoint(params.voiceSettings, config);
+		const formData = createVoiceFormData(params);
 
 		const response = await fetch(fullUrl, {
 			method: 'POST',
@@ -209,6 +228,96 @@ export const mastraProvider: ProviderImplementation<
 				content: text,
 			};
 		}
+	},
+
+	voiceStreamLLM: (params, config, handler) => {
+		const abortController = new AbortController();
+
+		const completion = (async () => {
+			try {
+				const headers = createVoiceHeaders(config);
+				const baseUrl = resolveVoiceEndpoint(params.voiceSettings, config);
+				const streamUrl = `${baseUrl}/stream`;
+				const formData = createVoiceFormData(params);
+
+				const response = await fetch(streamUrl, {
+					method: 'POST',
+					headers,
+					body: formData,
+					signal: abortController.signal,
+				});
+
+				if (!response.ok) {
+					throw new Error(`HTTP error! status: ${response.status}`);
+				}
+
+				// Use handleEventStream with voice-aware object handling
+				await handleEventStream(response, (event) => {
+					// Handle audio events that come through as object events
+					if (event.type === 'object' && event.object) {
+						const objects = Array.isArray(event.object)
+							? event.object
+							: [event.object];
+
+						// Check if any of these objects are audio events
+						for (const obj of objects) {
+							if (
+								obj &&
+								typeof obj === 'object' &&
+								'type' in obj &&
+								obj.type === 'audio'
+							) {
+								// Transform Mastra audio object to VoiceStreamEvent
+								const audioObj = obj as {
+									type: 'audio';
+									audioData?: string;
+									audioFormat?: string;
+								};
+								if (audioObj.audioData) {
+									handler({
+										type: 'audio',
+										audioData: audioObj.audioData,
+										audioFormat: audioObj.audioFormat,
+									});
+									// Continue processing other objects in the array if any
+									continue;
+								}
+							} else if (
+								obj &&
+								typeof obj === 'object' &&
+								'type' in obj &&
+								obj.type === 'transcription'
+							) {
+								const transcriptionObj = obj as {
+									type: 'transcription';
+									transcription: string;
+								};
+								handler({
+									type: 'transcription',
+									transcription: transcriptionObj.transcription,
+								});
+								// Continue processing other objects in the array if any
+								continue;
+							} else {
+								handler(event);
+							}
+						}
+					} else {
+						// Pass through all other events (chunk, done, error, metadata)
+						handler(event);
+					}
+				});
+			} catch (error) {
+				if (error instanceof Error && error.name !== 'AbortError') {
+					handler({ type: 'error', error });
+				}
+			}
+		})();
+
+		return {
+			abort: () => abortController.abort(),
+			completion,
+		};
 	},
 
 	handleResponse: async (response) => {

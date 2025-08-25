@@ -19,7 +19,10 @@ import type {
 	ResponseProcessor,
 	ResponseProcessorRegistry,
 	StructuredResponseType,
+	VoiceStreamHandler,
+	VoiceStreamEvent,
 } from '@/store/agentConnection/AgentConnectionTypes';
+
 import { useCedarStore } from '@/store/CedarStore';
 import { getCedarState } from '@/store/CedarStore';
 import { sanitizeJson } from '@/utils/sanitizeJson';
@@ -90,8 +93,12 @@ export interface AgentConnectionSlice {
 		handler: StreamHandler
 	) => StreamResponse;
 
-	// Voice LLM method
+	// Voice LLM methods
 	voiceLLM: (params: VoiceParams) => Promise<VoiceLLMResponse>;
+	voiceStreamLLM: (
+		params: VoiceParams,
+		handler: VoiceStreamHandler
+	) => StreamResponse;
 
 	// High-level methods that use callLLM/streamLLM
 	sendMessage: (params?: SendMessageParams) => Promise<void>;
@@ -125,7 +132,7 @@ export interface AgentConnectionSlice {
 // Create a typed version of the slice that knows about the provider
 export type TypedAgentConnectionSlice<T extends ProviderConfig> = Omit<
 	AgentConnectionSlice,
-	'callLLM' | 'streamLLM' | 'callLLMStructured' | 'voiceLLM'
+	'callLLM' | 'streamLLM' | 'callLLMStructured' | 'voiceLLM' | 'voiceStreamLLM'
 > & {
 	callLLM: (params: GetParamsForConfig<T>) => Promise<LLMResponse>;
 	callLLMStructured: (
@@ -136,6 +143,10 @@ export type TypedAgentConnectionSlice<T extends ProviderConfig> = Omit<
 		handler: StreamHandler
 	) => StreamResponse;
 	voiceLLM: (params: VoiceParams) => Promise<VoiceLLMResponse>;
+	voiceStreamLLM: (
+		params: VoiceParams,
+		handler: VoiceStreamHandler
+	) => StreamResponse;
 };
 
 export const improvePrompt = async (
@@ -440,6 +451,141 @@ export const createAgentConnectionSlice: StateCreator<
 			return response;
 		} catch (error) {
 			throw error;
+		}
+	},
+
+	// Voice streaming LLM method
+	voiceStreamLLM: (params: VoiceParams, handler: VoiceStreamHandler) => {
+		const config = get().providerConfig;
+		if (!config) {
+			throw new Error('No LLM provider configured');
+		}
+
+		// Augment params for Mastra provider to include resourceId & threadId
+		let voiceParams: VoiceParams = params;
+		if (config.provider === 'mastra') {
+			const resourceId = getCedarState('userId') as string | undefined;
+			const threadId = getCedarState('threadId') as string | undefined;
+			voiceParams = {
+				...params,
+				resourceId,
+				threadId,
+			} as typeof voiceParams;
+		}
+
+		// Log the stream start
+		const streamId = get().logStreamStart(voiceParams, config.provider);
+
+		const provider = getProviderImplementation(config);
+		const abortController = new AbortController();
+
+		set({ currentAbortController: abortController, isStreaming: true });
+
+		// Wrap the handler to log stream events
+		const wrappedHandler: VoiceStreamHandler = (event: VoiceStreamEvent) => {
+			if (event.type === 'chunk') {
+				get().logStreamChunk(streamId, event.content);
+			} else if (event.type === 'done') {
+				get().logStreamEnd(streamId, event.completedItems);
+			} else if (event.type === 'error') {
+				get().logAgentError(streamId, event.error);
+			} else if (event.type === 'object') {
+				get().logStreamObject(streamId, event.object);
+			} else if (event.type === 'transcription') {
+				get().logStreamChunk(streamId, event.transcription);
+			} else if (event.type === 'audio') {
+				// Log audio event (could be enhanced with audio-specific logging)
+				get().logStreamChunk(
+					streamId,
+					`[AUDIO: ${event.audioFormat || 'unknown'}]`
+				);
+			}
+			handler(event);
+		};
+
+		// Check if provider has voiceStreamLLM, fallback to voiceLLM if not
+		const providerImplementation = provider as unknown as Record<
+			string,
+			unknown
+		>;
+		if (typeof providerImplementation.voiceStreamLLM === 'function') {
+			// Provider supports voice streaming
+			const originalResponse = providerImplementation.voiceStreamLLM(
+				voiceParams as unknown as never,
+				config as never,
+				wrappedHandler
+			);
+
+			// Wrap the completion to update state when done
+			const wrappedCompletion = originalResponse.completion.finally(() => {
+				set({ isStreaming: false, currentAbortController: null });
+			});
+
+			return {
+				abort: () => {
+					originalResponse.abort();
+					abortController.abort();
+				},
+				completion: wrappedCompletion,
+			};
+		} else {
+			// Fallback to non-streaming voiceLLM for backward compatibility
+			const completion = (async () => {
+				try {
+					const response = await provider.voiceLLM(
+						voiceParams as unknown as never,
+						config as never
+					);
+
+					// Simulate streaming events for compatibility
+					if (response.content) {
+						wrappedHandler({ type: 'chunk', content: response.content });
+					}
+					if (response.audioData || response.audioUrl) {
+						wrappedHandler({
+							type: 'audio',
+							audioData: response.audioData || response.audioUrl || '',
+							audioFormat: response.audioFormat,
+						});
+					}
+					if (response.object) {
+						wrappedHandler({
+							type: 'object',
+							object: Array.isArray(response.object)
+								? response.object
+								: [response.object],
+						});
+					}
+
+					// Send done event
+					const completedItems: (string | StructuredResponseType)[] = [];
+					if (response.content) completedItems.push(response.content);
+					if (response.object) {
+						const objects = Array.isArray(response.object)
+							? response.object
+							: [response.object];
+						completedItems.push(...objects);
+					}
+
+					wrappedHandler({ type: 'done', completedItems });
+				} catch (error) {
+					if (error instanceof Error && error.name !== 'AbortError') {
+						wrappedHandler({ type: 'error', error });
+					}
+				}
+			})();
+
+			// Wrap the completion to update state when done
+			const wrappedCompletion = completion.finally(() => {
+				set({ isStreaming: false, currentAbortController: null });
+			});
+
+			return {
+				abort: () => {
+					abortController.abort();
+				},
+				completion: wrappedCompletion,
+			};
 		}
 	},
 

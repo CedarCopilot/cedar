@@ -1,6 +1,7 @@
 import { StateCreator } from 'zustand';
 import type { CedarStore } from '@/store/CedarOSTypes';
 import type {
+	VoiceStreamEvent,
 	StructuredResponseType,
 	VoiceLLMResponse,
 } from '@/store/agentConnection/AgentConnectionTypes';
@@ -26,6 +27,7 @@ export interface VoiceState {
 		useBrowserTTS?: boolean;
 		autoAddToMessages?: boolean;
 		endpoint?: string; // Voice endpoint URL
+		stream?: boolean; // Enable streaming voice responses
 	};
 }
 
@@ -71,6 +73,7 @@ const initialVoiceState: VoiceState = {
 		volume: 1.0,
 		useBrowserTTS: false,
 		autoAddToMessages: true, // Default to true for automatic message integration
+		stream: false, // Default to false for backward compatibility
 	},
 };
 
@@ -216,16 +219,74 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 			// Get the stringified additional context from the store
 			const contextString = get().stringifyAdditionalContext();
 
-			// Use the agent connection's voiceLLM method
-			const response = await get().voiceLLM({
+			const voiceParams = {
 				audioData,
 				voiceSettings,
 				context: contextString,
 				prompt: '',
-			});
+			};
 
-			// Handle the response using the new handleLLMVoice function
-			await get().handleLLMVoice(response);
+			// Check if voice streaming is enabled
+			if (voiceSettings.stream) {
+				// Use streaming voice method - follow same pattern as streamLLM
+				const streamResponse = get().voiceStreamLLM(
+					voiceParams,
+					async (event: VoiceStreamEvent) => {
+						switch (event.type) {
+							case 'transcription':
+								// Pass transcription to handleLLMVoice
+								await get().handleLLMVoice({
+									content: '',
+									transcription: event.transcription,
+								});
+								break;
+							case 'chunk':
+								// Pass text content directly to handleLLMVoice
+								await get().handleLLMVoice({ content: event.content });
+								break;
+							case 'audio':
+								// Pass complete audio response to handleLLMVoice
+								await get().handleLLMVoice({
+									content: '',
+									audioData: event.audioData,
+									audioFormat: event.audioFormat,
+								});
+								break;
+							case 'object':
+								// Pass structured objects to handleLLMVoice
+								await get().handleLLMVoice({
+									content: '',
+									object: Array.isArray(event.object)
+										? event.object
+										: [event.object],
+								});
+								break;
+							case 'done':
+								// Stream completed - no additional processing needed
+								break;
+							case 'error':
+								console.error('Voice stream error:', event.error);
+								set({
+									voiceError:
+										event.error.message || 'Voice streaming error occurred',
+								});
+								break;
+						}
+					}
+				);
+
+				// Wait for streaming to complete
+				await streamResponse.completion;
+			} else {
+				// Use the non-streaming agent connection's voiceLLM method
+				const response = await get().voiceLLM(voiceParams);
+
+				// Handle the response using the existing handleLLMVoice function
+				await get().handleLLMVoice(response);
+			}
+
+			// Voice processing completed successfully (streaming or non-streaming)
+			get().setIsProcessing(false);
 		} catch (error) {
 			set({
 				voiceError:
@@ -241,6 +302,7 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 
 		try {
 			set({ isSpeaking: false });
+			let handled = false;
 
 			// Handle audio playback (voice-specific)
 			if (response.audioData && response.audioFormat) {
@@ -251,8 +313,10 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 				}
 				const audioBuffer = bytes.buffer;
 				await get().playAudioResponse(audioBuffer);
+				handled = true;
 			} else if (response.audioUrl) {
 				await get().playAudioResponse(response.audioUrl);
+				handled = true;
 			} else if (response.content && voiceSettings.useBrowserTTS) {
 				if ('speechSynthesis' in window) {
 					const utterance = new SpeechSynthesisUtterance(response.content);
@@ -265,6 +329,7 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 					utterance.onend = () => set({ isSpeaking: false });
 
 					speechSynthesis.speak(utterance);
+					handled = true;
 				}
 			}
 
@@ -280,20 +345,20 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 						timestamp: new Date().toISOString(),
 					},
 				});
+				handled = true;
 			}
 
 			// Build items array for handleLLMResponse
 			const items: (string | StructuredResponseType)[] = [];
 
-			// This should be fixed tbh. HandleLLMResponse should be able to handle this, but due to current streaming limitations.
-
 			// Add content if present
-			if (response.content) {
+			if (response.content && !handled) {
 				items.push(response.content);
+				handled = true;
 			}
 
 			// Add object if present - cast to StructuredResponseType for compatibility
-			if (response.object) {
+			if (response.object && !handled) {
 				if (Array.isArray(response.object)) {
 					items.push(...response.object);
 				} else {
@@ -307,8 +372,7 @@ export const createVoiceSlice: StateCreator<CedarStore, [], [], VoiceSlice> = (
 				await handleLLMResponse(items);
 			}
 
-			// Set processing state to false when voice processing completes successfully
-			get().setIsProcessing(false);
+			// Note: processing state is now cleared after streaming/non-streaming completion in streamAudioToEndpoint
 		} catch (error) {
 			set({
 				voiceError:
