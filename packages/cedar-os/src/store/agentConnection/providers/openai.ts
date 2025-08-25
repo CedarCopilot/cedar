@@ -104,24 +104,13 @@ export const openAIProvider: ProviderImplementation<
 						promptTokens: data.usage.prompt_tokens,
 						completionTokens: data.usage.completion_tokens,
 						totalTokens: data.usage.total_tokens,
-				  }
+					}
 				: undefined,
 			metadata: {
 				model: data.model,
 				id: data.id,
 			},
 		};
-	},
-
-	// This can be safely removed
-	handleStreamResponse: (chunk) => {
-		try {
-			const data = JSON.parse(chunk);
-			const content = data.choices?.[0]?.delta?.content || '';
-			return { type: 'chunk', content };
-		} catch (error) {
-			return { type: 'error', error: error as Error };
-		}
 	},
 
 	callLLMStructured: async (params, config) => {

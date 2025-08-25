@@ -147,14 +147,14 @@ export type InferProviderParams<T extends ProviderConfig> = T extends {
 }
 	? OpenAIParams
 	: T extends { provider: 'anthropic' }
-	? AnthropicParams
-	: T extends { provider: 'mastra' }
-	? MastraParams
-	: T extends { provider: 'ai-sdk' }
-	? AISDKParams
-	: T extends { provider: 'custom' }
-	? CustomParams
-	: never;
+		? AnthropicParams
+		: T extends { provider: 'mastra' }
+			? MastraParams
+			: T extends { provider: 'ai-sdk' }
+				? AISDKParams
+				: T extends { provider: 'custom' }
+					? CustomParams
+					: never;
 
 export type InferProviderConfig<P extends ProviderConfig['provider']> = Extract<
 	ProviderConfig,
@@ -164,7 +164,7 @@ export type InferProviderConfig<P extends ProviderConfig['provider']> = Extract<
 // Provider implementation template
 export interface ProviderImplementation<
 	TParams extends BaseParams,
-	TConfig extends ProviderConfig
+	TConfig extends ProviderConfig,
 > {
 	callLLM: (params: TParams, config: TConfig) => Promise<LLMResponse>;
 	callLLMStructured: (
@@ -178,7 +178,6 @@ export interface ProviderImplementation<
 	) => StreamResponse;
 	voiceLLM: (params: VoiceParams, config: TConfig) => Promise<VoiceLLMResponse>;
 	handleResponse: (response: Response) => Promise<LLMResponse>;
-	handleStreamResponse: (chunk: string) => StreamEvent;
 }
 
 // Response processor types
@@ -195,7 +194,7 @@ export interface DefaultStructuredResponseType
 
 export type CustomStructuredResponseType<
 	T extends string,
-	P extends object = Record<string, never>
+	P extends object = Record<string, never>,
 > = BaseStructuredResponseType & { type: T } & P;
 
 // Union of default and custom response types
@@ -204,7 +203,7 @@ export type StructuredResponseType =
 	| CustomStructuredResponseType<string, object>;
 
 export interface ResponseProcessor<
-	T extends StructuredResponseType = StructuredResponseType
+	T extends StructuredResponseType = StructuredResponseType,
 > {
 	type: string;
 	namespace?: string;
@@ -213,7 +212,7 @@ export interface ResponseProcessor<
 }
 
 export type ResponseProcessorExecute<
-	T extends StructuredResponseType = StructuredResponseType
+	T extends StructuredResponseType = StructuredResponseType,
 > = (obj: T, store: CedarStore) => void | Promise<void>;
 
 export type ResponseProcessorRegistry = Record<

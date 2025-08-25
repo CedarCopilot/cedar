@@ -229,11 +229,6 @@ export const mastraProvider: ProviderImplementation<
 			object: data.object, // Include the structured output if present
 		};
 	},
-
-	// This can be safely removed
-	handleStreamResponse: (chunk) => {
-		return { type: 'chunk', content: chunk };
-	},
 };
 
 /**
@@ -255,7 +250,7 @@ export type MastraStreamedResponseType =
  * Extends Cedar's `CustomMessage` so it is compatible with the message system.
  */
 export type MastraStreamedResponse<
-	T extends MastraStreamedResponseType = MastraStreamedResponseType
+	T extends MastraStreamedResponseType = MastraStreamedResponseType,
 > = {
 	type: T;
 	runId: string;

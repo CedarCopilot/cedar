@@ -44,7 +44,6 @@ export interface AISDKProviderImplementation {
 		config: AISDKConfig
 	) => Promise<VoiceLLMResponse>;
 	handleResponse: (response: Response) => Promise<LLMResponse>;
-	handleStreamResponse: (chunk: string) => StreamEvent;
 }
 
 // Direct mapping of provider names to their implementations
@@ -138,7 +137,7 @@ export const aiSDKProvider: AISDKProviderImplementation = {
 							(result.usage as { completionTokens?: number })
 								.completionTokens || 0,
 						totalTokens: result.usage.totalTokens || 0,
-				  }
+					}
 				: undefined,
 			metadata: {
 				model: modelString,
@@ -221,7 +220,7 @@ export const aiSDKProvider: AISDKProviderImplementation = {
 							(result.usage as { completionTokens?: number })
 								.completionTokens || 0,
 						totalTokens: result.usage.totalTokens || 0,
-				  }
+					}
 				: undefined,
 			metadata: {
 				model: modelString,
@@ -434,7 +433,7 @@ export const aiSDKProvider: AISDKProviderImplementation = {
 							(result.usage as { completionTokens?: number })
 								.completionTokens || 0,
 						totalTokens: result.usage.totalTokens || 0,
-				  }
+					}
 				: undefined,
 			metadata: {
 				model: responseModelString,
@@ -454,11 +453,5 @@ export const aiSDKProvider: AISDKProviderImplementation = {
 			usage: data.usage,
 			metadata: data.metadata,
 		};
-	},
-
-	// This can be safely removed
-	handleStreamResponse: (chunk) => {
-		// AI SDK handles streaming internally
-		return { type: 'chunk', content: chunk };
 	},
 };
